@@ -1,0 +1,265 @@
+---
+title: "NYC Traffic Data Analysis"
+output: html_notebook
+---
+
+This notebook explores NYC accident/collision data and NYS traffic data. 
+The overall question is, are accidents explained simply by the amount of 
+traffic? If not, are there any insights we can glean to implement safety 
+measures for government officials to implement?
+
+```{r}
+library(dplyr) 
+library(tidyr) 
+library(ggplot2) 
+library(lubridate)
+```
+
+ETL for NYC Motor Vechicle Collisions data
+https://dmv.ny.gov/about-dmv/statistical-summaries
+
+```{r ETL}
+
+collisions = read.csv("./Motor_Vehicle_Collisions_-_Crashes.csv")
+
+# Set crash date data type to date
+collisions$CRASH.DATE = as.Date(collisions$CRASH.DATE, "%m/%d/%Y")
+
+# Extract hour of day from crash time
+collisions$CRASH.HOUR = sub("\\:.*", "", collisions$CRASH.TIME)
+
+# Inspect date range of data
+min(collisions$CRASH.DATE) 
+max(collisions$CRASH.DATE)
+
+# Since 2012 and 2021 are not a full year, filter between 2013 and 2019
+collisions = collisions %>%
+  filter(CRASH.DATE >= "2013-01-01" & CRASH.DATE <= "2020-12-31")
+
+```
+
+EDA of collisions data
+
+```{r}
+collisions %>%
+  ggplot(aes(x=CONTRIBUTING.FACTOR.VEHICLE.1, y=NUMBER.OF.PERSONS.KILLED)) +
+    geom_boxplot()
+
+unique(collisions$CONTRIBUTING.FACTOR.VEHICLE.1)
+
+```
+
+Q: What is the leading contributing factor to deaths?
+
+```{r}
+collisions %>%
+  filter(!CONTRIBUTING.FACTOR.VEHICLE.1 %in% c("", 
+                                               "1", 
+                                               "80", 
+                                              "Unspecified") 
+         & NUMBER.OF.PERSONS.KILLED > 0) %>%
+  count(CONTRIBUTING.FACTOR.VEHICLE.1) %>%
+  arrange(desc(n)) %>%
+  top_n(10) %>%
+  ggplot(aes(x=CONTRIBUTING.FACTOR.VEHICLE.1, y=n)) +
+    geom_bar(stat='identity') + 
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+# Driver inattention is leading factor. Does this happen more different times of day? 
+collisions %>%
+  filter(CONTRIBUTING.FACTOR.VEHICLE.1 == "Driver Inattention/Distraction" 
+         & NUMBER.OF.PERSONS.KILLED > 0) %>%
+  select(CRASH.HOUR) %>%
+  arrange(as.numeric(CRASH.HOUR)) %>%
+  ggplot(aes(x=CRASH.HOUR)) +
+    geom_bar()
+## More during rush hour but we should normalize for traffic or collisions.
+
+```
+
+Q: Have there been more deaths over time?
+
+```{r}
+
+collisions %>%
+  filter(NUMBER.OF.PERSONS.KILLED > 0) %>%
+  group_by(month = lubridate::floor_date(CRASH.DATE, "month")) %>%
+  summarise(NUMBER.OF.PEDESTRIANS.KILLED=sum(NUMBER.OF.PEDESTRIANS.KILLED, na.rm=TRUE),
+            NUMBER.OF.CYCLIST.KILLED=sum(NUMBER.OF.CYCLIST.KILLED, na.rm=TRUE),
+            NUMBER.OF.MOTORIST.KILLED=sum(NUMBER.OF.MOTORIST.KILLED, na.rm=TRUE)) %>%
+  gather(key="type", value="people", -month) %>%
+  ggplot(aes(x=month, y=people)) +
+    geom_line(aes(color=type, linetype=type))
+
+```
+Q: How about injuries?
+
+```{r}
+collisions %>%
+  filter(NUMBER.OF.PERSONS.INJURED > 0) %>%
+  group_by(month = lubridate::floor_date(CRASH.DATE, "month")) %>%
+  summarise(NUMBER.OF.PEDESTRIANS.INJURED=sum(NUMBER.OF.PEDESTRIANS.INJURED, na.rm=TRUE),
+            NUMBER.OF.CYCLIST.INJURED=sum(NUMBER.OF.CYCLIST.INJURED, na.rm=TRUE),
+            NUMBER.OF.MOTORIST.INJURED=sum(NUMBER.OF.MOTORIST.INJURED, na.rm=TRUE)) %>%
+  gather(key="type", value="people", -month) %>%
+  ggplot(aes(x=month, y=people)) +
+    geom_line(aes(color=type, linetype=type))
+```
+
+Q: Are there months of the year where more deaths or injuries happen?
+
+```{r}
+
+collisions %>%
+  filter(NUMBER.OF.PERSONS.KILLED > 0) %>%
+  group_by(month = lubridate::month(CRASH.DATE)) %>%
+  summarise(NUMBER.OF.PEDESTRIANS.KILLED=sum(NUMBER.OF.PEDESTRIANS.KILLED, na.rm=TRUE),
+            NUMBER.OF.CYCLIST.KILLED=sum(NUMBER.OF.CYCLIST.KILLED, na.rm=TRUE),
+            NUMBER.OF.MOTORIST.KILLED=sum(NUMBER.OF.MOTORIST.KILLED, na.rm=TRUE)) %>%
+  gather(key="type", value="people", -month) %>%
+  ggplot(aes(x=month, y=people)) +
+    geom_line(aes(color=type, linetype=type))
+
+collisions %>%
+  filter(NUMBER.OF.PERSONS.INJURED > 0) %>%
+  group_by(month = lubridate::month(CRASH.DATE)) %>%
+  summarise(NUMBER.OF.PEDESTRIANS.INJURED=sum(NUMBER.OF.PEDESTRIANS.INJURED, na.rm=TRUE),
+            NUMBER.OF.CYCLIST.INJURED=sum(NUMBER.OF.CYCLIST.INJURED, na.rm=TRUE),
+            NUMBER.OF.MOTORIST.INJURED=sum(NUMBER.OF.MOTORIST.INJURED, na.rm=TRUE)) %>%
+  gather(key="type", value="people", -month) %>%
+  ggplot(aes(x=month, y=people)) +
+    geom_line(aes(color=type, linetype=type))
+
+```
+
+ETL NYS Traffic Data 
+https://data.ny.gov/Transportation/Annual-Average-Daily-Traffic-AADT-Beginning-1977/6amx-2pbv
+
+```{r}
+
+traffic = read.csv("./Annual_Average_Daily_Traffic__AADT___Beginning_1977.csv")
+
+min(traffic$Year)
+max(traffic$Year)
+
+# Filter the traffic data by the same years as the collisions data and the same Boroughs/Counties
+traffic = traffic %>%
+  filter(Year >= 2013 & County %in% c("Bronx", "Kings", "New York", "Richmond", "Queens"))
+
+# Add Borough column to match counties to boroughs
+traffic = traffic %>%
+  mutate(Borough = case_when(
+    County == "Bronx" ~ "BRONX",
+    County == "Kings" ~ "BROOKLYN",
+    County == "New York" ~ "MANHATTAN",
+    County == "Richmond" ~ "STATEN ISLAND",
+    County == "Queens" ~ "QUEENS"
+    ))
+
+```
+
+EDA of traffic data
+
+```{r}
+
+traffic %>%
+  group_by(County, Year) %>%
+  summarise(Traffic=sum(Count, na.rm=TRUE)) %>%
+  ggplot(aes(x=Year, y=Traffic, color=County)) +
+  geom_line()
+# Interesting spike in 2019. Are there more stations? Ride sharing?
+
+traffic %>%
+  group_by(Station.ID, Year) %>%
+  count(Station.ID) %>%
+  filter(n == 2)
+# There are a number of bad station ids with n()=2. Not entirely sure what that means, but
+# looking at this directionally.
+
+traffic %>%
+  group_by(Year) %>%
+  summarise(n())
+# Same number of stations year over year, so traffic changes not due to station changes.
+
+```
+Q: Are there more accidents and/or traffic over time?
+
+``` {r}
+
+collisions %>%
+  filter(BOROUGH != "") %>%
+  group_by(BOROUGH, year=lubridate::year(CRASH.DATE)) %>%
+  summarise(collision=n()) %>%
+  ggplot(aes(x=year, y=collision, color=BOROUGH)) +
+    geom_line()
+    
+traffic %>%
+  group_by(Year, Borough) %>%
+  summarise(traffic=sum(Count, na.rm=TRUE)) %>%
+  ggplot(aes(x=Year, y=traffic, color=Borough)) +
+    geom_line()
+
+```
+
+Join the datasets by year and borough/county
+
+```{r}
+traffic_collisions = collisions %>%
+  filter(BOROUGH != "") %>%
+  group_by(Year=lubridate::year(CRASH.DATE), BOROUGH) %>%
+  summarise(num.ppl.injured=sum(NUMBER.OF.PERSONS.INJURED, na.rm=TRUE), 
+            num.ppl.killed=sum(NUMBER.OF.PERSONS.KILLED, na.rm=TRUE),
+            num.peds.injured=sum(NUMBER.OF.PEDESTRIANS.INJURED, na.rm=TRUE),
+            num.peds.killed=sum(NUMBER.OF.PEDESTRIANS.KILLED, na.rm=TRUE),
+            num.peds.killed=sum(NUMBER.OF.PEDESTRIANS.KILLED, na.rm=TRUE),
+            num.cyclists.injured=sum(NUMBER.OF.CYCLIST.INJURED, na.rm=TRUE),
+            num.cyclists.killed=sum(NUMBER.OF.CYCLIST.KILLED, na.rm=TRUE),
+            num.motorists.injured=sum(NUMBER.OF.MOTORIST.INJURED, na.rm=TRUE),
+            num.motorists.killed=sum(NUMBER.OF.MOTORIST.KILLED, na.rm=TRUE),
+            num.collisions=n()) %>%
+  inner_join(traffic %>%
+               group_by(Year, Borough) %>%
+               summarise(traffic=sum(Count, na.rm=TRUE), roadLength=sum(Length, na.rm=TRUE)), 
+             by=c("Year" = "Year", "BOROUGH" = "Borough"))
+```
+
+EDA of joined traffic and collision data
+
+```{r}
+
+## Start here and fix this
+traffic_collisions %>%
+  ggplot(aes(x=traffic/1000, y=num.collisions, color=BOROUGH)) + 
+    geom_point()
+
+# It looks like there is one queens point in 2019 that is an anomaly. Going to remove it.
+traffic_collisions %>%
+  filter(!traffic == 26695902) %>%
+  ggplot(aes(x=traffic/1000, y=num.collisions, color=BOROUGH)) + 
+    geom_point()
+
+traffic_collisions %>%
+  filter(!traffic == 26695902) %>%
+  ggplot(aes(x=traffic/1000, y=num.ppl.injured, color=BOROUGH)) + 
+    geom_point()
+
+traffic_collisions %>%
+  filter(!traffic == 26695902) %>%
+  ggplot(aes(x=traffic/1000, y=num.ppl.killed, color=BOROUGH)) + 
+    geom_point()
+
+```
+
+Q: Is number of injuries or deaths a function of traffic?
+
+```{r}
+
+model_killed = lm(num.ppl.killed ~ traffic, data = traffic_collisions)
+summary(model_killed)
+
+model_injured = lm(num.ppl.injured ~ traffic, data=traffic_collisions)
+summary(model_injured)
+
+# Neither are a function of traffic which is good - something else going on.
+```
+
